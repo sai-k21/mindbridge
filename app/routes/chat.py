@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Conversation, UserMemory, EmotionLog, CrisisLog
+from app.agent import mindbridge_graph
 import anthropic
 import os
 
@@ -85,17 +86,31 @@ You deserve real support from someone trained to help. I care about what happens
 @router.post("/chat")
 def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_db)):
 
-    # Detect emotion — crisis check happens inside
-    emotion = detect_emotion(message)
-
-    # Save user message with emotion
+    # Save user message first
     db.add(Conversation(
         user_id=user_id,
         session_id=session_id,
         role="user",
-        content=message,
-        emotion=emotion
+        content=message
     ))
+    db.commit()
+
+    # Run through LangGraph multi-agent pipeline
+    result = mindbridge_graph.invoke({
+        "user_id": user_id,
+        "session_id": session_id,
+        "message": message,
+        "emotion": None,
+        "memory_summary": None,
+        "conversation_history": None,
+        "reply": None,
+        "crisis_escalated": False,
+        "db": db
+    })
+
+    emotion = result["emotion"]
+    reply = result["reply"]
+    crisis_escalated = result["crisis_escalated"]
 
     # Log emotion
     db.add(EmotionLog(
@@ -104,72 +119,24 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
         emotion=emotion,
         message_snippet=message[:100]
     ))
-    db.commit()
 
-    # CRISIS PATH — bypass normal flow entirely
-    if emotion == "crisis":
-        crisis_reply = build_crisis_response()
-
-        # Log crisis event
+    # Log crisis if triggered
+    if crisis_escalated:
         db.add(CrisisLog(
             user_id=user_id,
             session_id=session_id,
             message_snippet=message[:200],
-            response_given=crisis_reply,
+            response_given=reply,
             escalated=True
         ))
 
-        # Save assistant response
-        db.add(Conversation(
-            user_id=user_id,
-            session_id=session_id,
-            role="assistant",
-            content=crisis_reply
-        ))
-        db.commit()
-
-        return {
-            "session_id": session_id,
-            "reply": crisis_reply,
-            "emotion_detected": "crisis",
-            "crisis_escalated": True,
-            "memory_active": False
-        }
-
-    # NORMAL PATH
-    history = db.query(Conversation)\
-        .filter(Conversation.session_id == session_id)\
-        .order_by(Conversation.created_at)\
-        .all()
-
-    memory = db.query(UserMemory)\
-        .filter(UserMemory.user_id == user_id)\
-        .first()
-
-    system = SYSTEM_PROMPT
-    system += f"\n\nCurrent emotional state detected: {emotion.upper()}"
-    system += f"\n{TONE_INSTRUCTIONS[emotion]}"
-
-    if memory and memory.summary:
-        system += f"\n\nWhat you remember about this user from past sessions:\n{memory.summary}"
-        system += "\n\nUse this memory naturally — don't announce that you remember things, just use the context."
-
-    messages = [{"role": h.role, "content": h.content} for h in history]
-
-    response = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=1000,
-        system=system,
-        messages=messages
-    )
-
-    reply = response.content[0].text
-
+    # Save assistant response
     db.add(Conversation(
         user_id=user_id,
         session_id=session_id,
         role="assistant",
-        content=reply
+        content=reply,
+        emotion=emotion
     ))
     db.commit()
 
@@ -177,10 +144,9 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
         "session_id": session_id,
         "reply": reply,
         "emotion_detected": emotion,
-        "crisis_escalated": False,
-        "memory_active": memory is not None
+        "crisis_escalated": crisis_escalated,
+        "memory_active": result["memory_summary"] is not None
     }
-
 
 @router.post("/memory/update")
 def update_memory(user_id: str, db: Session = Depends(get_db)):

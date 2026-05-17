@@ -75,7 +75,7 @@ Open: `http://127.0.0.1:8000/docs`
 
 - [x] Phase 1: FastAPI + PostgreSQL + Claude API
 - [x] Phase 2: Persistent memory across sessions
-- [ ] Phase 3: Emotion detection and tone adaptation
+- [x] Phase 3: Emotion detection and tone adaptation
 - [ ] Phase 4: Pattern recognition and weekly insights
 - [ ] Phase 5: Crisis detection and guardrails
 - [ ] Phase 6: Multi-agent orchestration with LangGraph

@@ -77,7 +77,7 @@ Open: `http://127.0.0.1:8000/docs`
 - [x] Phase 2: Persistent memory across sessions
 - [x] Phase 3: Emotion detection and tone adaptation
 - [x] Phase 4: Pattern recognition and weekly insights
-- [ ] Phase 5: Crisis detection and guardrails
+- [x] Phase 5: Crisis detection and guardrails
 - [ ] Phase 6: Multi-agent orchestration with LangGraph
 - [ ] Phase 7: Redis caching + observability
 - [ ] Phase 8: Full deployment + React frontend

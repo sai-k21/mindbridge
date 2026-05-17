@@ -1,12 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Conversation, UserMemory, EmotionLog
+from app.models import Conversation, UserMemory, EmotionLog, CrisisLog
 import anthropic
 import os
 
 router = APIRouter()
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+# Crisis keywords for fast rule-based detection
+CRISIS_KEYWORDS = [
+    "kill myself", "want to die", "end my life", "suicide", "suicidal",
+    "don't want to exist", "better off dead", "no reason to live",
+    "can't go on", "give up on life", "hurt myself", "self harm"
+]
 
 # Tone instructions per emotion
 TONE_INSTRUCTIONS = {
@@ -25,7 +32,17 @@ If someone seems to be in crisis, always refer them to
 professional help or the 988 crisis line (US)."""
 
 
+def check_crisis_keywords(message: str) -> bool:
+    message_lower = message.lower()
+    return any(keyword in message_lower for keyword in CRISIS_KEYWORDS)
+
+
 def detect_emotion(message: str) -> str:
+
+    # Fast rule-based crisis check first
+    if check_crisis_keywords(message):
+        return "crisis"
+
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=50,
@@ -52,10 +69,23 @@ Respond with only one word, nothing else."""
     return emotion
 
 
+def build_crisis_response() -> str:
+    return """I hear you, and I'm really glad you reached out right now.
+
+What you're feeling matters, and you don't have to face this alone.
+
+Please reach out to someone who can help right now:
+- Call or text 988 (Suicide and Crisis Lifeline, US) — available 24/7
+- Text HOME to 741741 (Crisis Text Line)
+- Call 911 or go to your nearest emergency room if you are in immediate danger
+
+You deserve real support from someone trained to help. I care about what happens to you."""
+
+
 @router.post("/chat")
 def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_db)):
 
-    # Detect emotion first
+    # Detect emotion — crisis check happens inside
     emotion = detect_emotion(message)
 
     # Save user message with emotion
@@ -67,7 +97,7 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
         emotion=emotion
     ))
 
-    # Log emotion separately
+    # Log emotion
     db.add(EmotionLog(
         user_id=user_id,
         session_id=session_id,
@@ -76,18 +106,46 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
     ))
     db.commit()
 
-    # Get current session history
+    # CRISIS PATH — bypass normal flow entirely
+    if emotion == "crisis":
+        crisis_reply = build_crisis_response()
+
+        # Log crisis event
+        db.add(CrisisLog(
+            user_id=user_id,
+            session_id=session_id,
+            message_snippet=message[:200],
+            response_given=crisis_reply,
+            escalated=True
+        ))
+
+        # Save assistant response
+        db.add(Conversation(
+            user_id=user_id,
+            session_id=session_id,
+            role="assistant",
+            content=crisis_reply
+        ))
+        db.commit()
+
+        return {
+            "session_id": session_id,
+            "reply": crisis_reply,
+            "emotion_detected": "crisis",
+            "crisis_escalated": True,
+            "memory_active": False
+        }
+
+    # NORMAL PATH
     history = db.query(Conversation)\
         .filter(Conversation.session_id == session_id)\
         .order_by(Conversation.created_at)\
         .all()
 
-    # Get long term memory for this user
     memory = db.query(UserMemory)\
         .filter(UserMemory.user_id == user_id)\
         .first()
 
-    # Build dynamic system prompt based on emotion
     system = SYSTEM_PROMPT
     system += f"\n\nCurrent emotional state detected: {emotion.upper()}"
     system += f"\n{TONE_INSTRUCTIONS[emotion]}"
@@ -96,10 +154,8 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
         system += f"\n\nWhat you remember about this user from past sessions:\n{memory.summary}"
         system += "\n\nUse this memory naturally — don't announce that you remember things, just use the context."
 
-    # Build messages list
     messages = [{"role": h.role, "content": h.content} for h in history]
 
-    # Call Claude
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=1000,
@@ -109,7 +165,6 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
 
     reply = response.content[0].text
 
-    # Save assistant response
     db.add(Conversation(
         user_id=user_id,
         session_id=session_id,
@@ -122,6 +177,7 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
         "session_id": session_id,
         "reply": reply,
         "emotion_detected": emotion,
+        "crisis_escalated": False,
         "memory_active": memory is not None
     }
 
@@ -156,7 +212,7 @@ Focus on:
 - Their communication style and preferences
 - Anything important to remember for next time
 
-Be concise, factual, and compassionate. Write in second person (e.g. "You tend to...").
+Be concise, factual, and compassionate. Write in second person.
 
 Conversations:
 {history_text}"""
@@ -164,7 +220,6 @@ Conversations:
     )
 
     summary = response.content[0].text
-
     memory = db.query(UserMemory)\
         .filter(UserMemory.user_id == user_id)\
         .first()
@@ -238,7 +293,6 @@ def get_emotions(user_id: str, db: Session = Depends(get_db)):
     if not logs:
         raise HTTPException(status_code=404, detail="No emotion data found for this user")
 
-    # Count emotions
     emotion_counts = {}
     for log in logs:
         emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
@@ -257,10 +311,10 @@ def get_emotions(user_id: str, db: Session = Depends(get_db)):
         ]
     }
 
+
 @router.get("/patterns/{user_id}")
 def get_patterns(user_id: str, db: Session = Depends(get_db)):
 
-    # Get all emotion logs for this user
     logs = db.query(EmotionLog)\
         .filter(EmotionLog.user_id == user_id)\
         .order_by(EmotionLog.created_at)\
@@ -272,18 +326,15 @@ def get_patterns(user_id: str, db: Session = Depends(get_db)):
     if len(logs) < 3:
         raise HTTPException(status_code=400, detail="Not enough data yet — keep chatting and check back soon")
 
-    # Build emotion history text for Claude to analyze
     history_text = "\n".join([
         f"{log.created_at} | {log.emotion} | {log.message_snippet}"
         for log in logs
     ])
 
-    # Count emotions
     emotion_counts = {}
     for log in logs:
         emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
 
-    # Ask Claude to find patterns
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=600,
@@ -295,7 +346,7 @@ Based on this emotion history, identify meaningful patterns and insights.
 
 Focus on:
 - Which emotions appear most frequently
-- Any time-based patterns (certain times of day, days of week)
+- Any time-based patterns
 - Recurring triggers mentioned in message snippets
 - Whether things are improving or worsening over time
 - One specific, actionable insight the user can act on
@@ -310,13 +361,11 @@ Emotion counts: {emotion_counts}"""
         }]
     )
 
-    pattern_insight = response.content[0].text
-
     return {
         "user_id": user_id,
         "total_messages_analyzed": len(logs),
         "emotion_breakdown": emotion_counts,
-        "pattern_insight": pattern_insight
+        "pattern_insight": response.content[0].text
     }
 
 
@@ -324,8 +373,6 @@ Emotion counts: {emotion_counts}"""
 def get_weekly_summary(user_id: str, db: Session = Depends(get_db)):
 
     from datetime import datetime, timedelta
-
-    # Get last 7 days of emotion logs
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
 
     logs = db.query(EmotionLog)\
@@ -339,15 +386,12 @@ def get_weekly_summary(user_id: str, db: Session = Depends(get_db)):
     if not logs:
         raise HTTPException(status_code=404, detail="No data found for the past 7 days")
 
-    # Count emotions this week
     emotion_counts = {}
     for log in logs:
         emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
 
-    # Most frequent emotion
     dominant_emotion = max(emotion_counts, key=emotion_counts.get)
 
-    # Build summary text
     history_text = "\n".join([
         f"{log.created_at.strftime('%A %H:%M')} | {log.emotion} | {log.message_snippet}"
         for log in logs
@@ -365,7 +409,7 @@ Based on the past 7 days of data, write a short, warm, honest weekly check-in su
 Include:
 - How their week looked emotionally overall
 - The most common trigger or theme
-- One thing they did well (even if just reaching out)
+- One thing they did well
 - One gentle suggestion for the week ahead
 
 Keep it under 120 words. Be specific, not generic. Write directly to the user.
@@ -380,9 +424,35 @@ Dominant emotion: {dominant_emotion}"""
 
     return {
         "user_id": user_id,
-        "week_analyzed": f"Past 7 days",
+        "week_analyzed": "Past 7 days",
         "total_checkins": len(logs),
         "emotion_breakdown": emotion_counts,
         "dominant_emotion": dominant_emotion,
         "weekly_summary": response.content[0].text
+    }
+
+
+@router.get("/crisis-log/{user_id}")
+def get_crisis_log(user_id: str, db: Session = Depends(get_db)):
+
+    logs = db.query(CrisisLog)\
+        .filter(CrisisLog.user_id == user_id)\
+        .order_by(CrisisLog.created_at)\
+        .all()
+
+    if not logs:
+        return {"user_id": user_id, "crisis_events": 0, "log": []}
+
+    return {
+        "user_id": user_id,
+        "crisis_events": len(logs),
+        "log": [
+            {
+                "session_id": log.session_id,
+                "message_snippet": log.message_snippet,
+                "escalated": log.escalated,
+                "created_at": str(log.created_at)
+            }
+            for log in logs
+        ]
     }

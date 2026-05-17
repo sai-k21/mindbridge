@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -26,4 +26,14 @@ class EmotionLog(Base):
     session_id = Column(String, index=True)
     emotion = Column(String)
     message_snippet = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+
+class CrisisLog(Base):
+    __tablename__ = "crisis_log"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True)
+    session_id = Column(String, index=True)
+    message_snippet = Column(Text)
+    response_given = Column(Text)
+    escalated = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())

@@ -1,12 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Conversation, UserMemory
+from app.models import Conversation, UserMemory, EmotionLog
 import anthropic
 import os
 
 router = APIRouter()
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+# Tone instructions per emotion
+TONE_INSTRUCTIONS = {
+    "calm": "The user seems calm. Be warm, conversational, and exploratory. Ask thoughtful open-ended questions.",
+    "stressed": "The user is stressed. Be grounded and validating. Acknowledge what they are carrying before asking anything.",
+    "anxious": "The user is anxious. Slow down. Be very gentle. Use shorter sentences. Give them space to breathe before exploring.",
+    "overwhelmed": "The user is overwhelmed. Be extremely gentle. Focus on one thing at a time. Do not ask multiple questions.",
+    "crisis": "The user may be in crisis. Do not ask questions. Immediately express care and refer them to professional help. Always mention the 988 Suicide and Crisis Lifeline (call or text 988 in the US) and encourage them to reach out to someone they trust."
+}
 
 SYSTEM_PROMPT = """You are MindBridge, a compassionate AI companion 
 for people dealing with workplace stress. You listen deeply, ask 
@@ -16,15 +25,54 @@ If someone seems to be in crisis, always refer them to
 professional help or the 988 crisis line (US)."""
 
 
+def detect_emotion(message: str) -> str:
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=50,
+        messages=[{
+            "role": "user",
+            "content": f"""Classify the emotional state in this message into exactly one word.
+Choose only from: calm, stressed, anxious, overwhelmed, crisis
+
+Rules:
+- crisis: any mention of self-harm, suicide, hopelessness, not wanting to exist
+- overwhelmed: completely unable to cope, everything is too much
+- anxious: worry, fear, nervousness, panic
+- stressed: pressure, tension, difficulty but still coping
+- calm: neutral or positive
+
+Message: "{message}"
+
+Respond with only one word, nothing else."""
+        }]
+    )
+    emotion = response.content[0].text.strip().lower()
+    if emotion not in ["calm", "stressed", "anxious", "overwhelmed", "crisis"]:
+        emotion = "stressed"
+    return emotion
+
+
 @router.post("/chat")
 def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_db)):
 
-    # Save user message
+    # Detect emotion first
+    emotion = detect_emotion(message)
+
+    # Save user message with emotion
     db.add(Conversation(
         user_id=user_id,
         session_id=session_id,
         role="user",
-        content=message
+        content=message,
+        emotion=emotion
+    ))
+
+    # Log emotion separately
+    db.add(EmotionLog(
+        user_id=user_id,
+        session_id=session_id,
+        emotion=emotion,
+        message_snippet=message[:100]
     ))
     db.commit()
 
@@ -39,8 +87,11 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
         .filter(UserMemory.user_id == user_id)\
         .first()
 
-    # Build system prompt — inject memory if it exists
+    # Build dynamic system prompt based on emotion
     system = SYSTEM_PROMPT
+    system += f"\n\nCurrent emotional state detected: {emotion.upper()}"
+    system += f"\n{TONE_INSTRUCTIONS[emotion]}"
+
     if memory and memory.summary:
         system += f"\n\nWhat you remember about this user from past sessions:\n{memory.summary}"
         system += "\n\nUse this memory naturally — don't announce that you remember things, just use the context."
@@ -70,6 +121,7 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
     return {
         "session_id": session_id,
         "reply": reply,
+        "emotion_detected": emotion,
         "memory_active": memory is not None
     }
 
@@ -77,7 +129,6 @@ def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_
 @router.post("/memory/update")
 def update_memory(user_id: str, db: Session = Depends(get_db)):
 
-    # Get all conversations for this user
     all_convos = db.query(Conversation)\
         .filter(Conversation.user_id == user_id)\
         .order_by(Conversation.created_at)\
@@ -86,12 +137,10 @@ def update_memory(user_id: str, db: Session = Depends(get_db)):
     if not all_convos:
         raise HTTPException(status_code=404, detail="No conversations found for this user")
 
-    # Build full history text
     history_text = "\n".join([
         f"{c.role}: {c.content}" for c in all_convos
     ])
 
-    # Ask Claude to summarize into memory
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=600,
@@ -116,7 +165,6 @@ Conversations:
 
     summary = response.content[0].text
 
-    # Store or update memory
     memory = db.query(UserMemory)\
         .filter(UserMemory.user_id == user_id)\
         .first()
@@ -171,8 +219,40 @@ def get_history(user_id: str, db: Session = Depends(get_db)):
                 "session_id": c.session_id,
                 "role": c.role,
                 "content": c.content,
+                "emotion": c.emotion,
                 "created_at": str(c.created_at)
             }
             for c in conversations
+        ]
+    }
+
+
+@router.get("/emotions/{user_id}")
+def get_emotions(user_id: str, db: Session = Depends(get_db)):
+
+    logs = db.query(EmotionLog)\
+        .filter(EmotionLog.user_id == user_id)\
+        .order_by(EmotionLog.created_at)\
+        .all()
+
+    if not logs:
+        raise HTTPException(status_code=404, detail="No emotion data found for this user")
+
+    # Count emotions
+    emotion_counts = {}
+    for log in logs:
+        emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
+
+    return {
+        "user_id": user_id,
+        "total_messages": len(logs),
+        "emotion_breakdown": emotion_counts,
+        "emotion_history": [
+            {
+                "emotion": log.emotion,
+                "message_snippet": log.message_snippet,
+                "created_at": str(log.created_at)
+            }
+            for log in logs
         ]
     }

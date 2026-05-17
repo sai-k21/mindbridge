@@ -256,3 +256,133 @@ def get_emotions(user_id: str, db: Session = Depends(get_db)):
             for log in logs
         ]
     }
+
+@router.get("/patterns/{user_id}")
+def get_patterns(user_id: str, db: Session = Depends(get_db)):
+
+    # Get all emotion logs for this user
+    logs = db.query(EmotionLog)\
+        .filter(EmotionLog.user_id == user_id)\
+        .order_by(EmotionLog.created_at)\
+        .all()
+
+    if not logs:
+        raise HTTPException(status_code=404, detail="No emotion data found for this user")
+
+    if len(logs) < 3:
+        raise HTTPException(status_code=400, detail="Not enough data yet — keep chatting and check back soon")
+
+    # Build emotion history text for Claude to analyze
+    history_text = "\n".join([
+        f"{log.created_at} | {log.emotion} | {log.message_snippet}"
+        for log in logs
+    ])
+
+    # Count emotions
+    emotion_counts = {}
+    for log in logs:
+        emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
+
+    # Ask Claude to find patterns
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=600,
+        messages=[{
+            "role": "user",
+            "content": f"""You are analyzing emotional patterns for a user of a workplace stress companion app.
+
+Based on this emotion history, identify meaningful patterns and insights.
+
+Focus on:
+- Which emotions appear most frequently
+- Any time-based patterns (certain times of day, days of week)
+- Recurring triggers mentioned in message snippets
+- Whether things are improving or worsening over time
+- One specific, actionable insight the user can act on
+
+Be warm, specific, and honest. Write directly to the user in second person.
+Keep it under 150 words. Do not be generic.
+
+Emotion history:
+{history_text}
+
+Emotion counts: {emotion_counts}"""
+        }]
+    )
+
+    pattern_insight = response.content[0].text
+
+    return {
+        "user_id": user_id,
+        "total_messages_analyzed": len(logs),
+        "emotion_breakdown": emotion_counts,
+        "pattern_insight": pattern_insight
+    }
+
+
+@router.get("/weekly-summary/{user_id}")
+def get_weekly_summary(user_id: str, db: Session = Depends(get_db)):
+
+    from datetime import datetime, timedelta
+
+    # Get last 7 days of emotion logs
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+
+    logs = db.query(EmotionLog)\
+        .filter(
+            EmotionLog.user_id == user_id,
+            EmotionLog.created_at >= seven_days_ago
+        )\
+        .order_by(EmotionLog.created_at)\
+        .all()
+
+    if not logs:
+        raise HTTPException(status_code=404, detail="No data found for the past 7 days")
+
+    # Count emotions this week
+    emotion_counts = {}
+    for log in logs:
+        emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
+
+    # Most frequent emotion
+    dominant_emotion = max(emotion_counts, key=emotion_counts.get)
+
+    # Build summary text
+    history_text = "\n".join([
+        f"{log.created_at.strftime('%A %H:%M')} | {log.emotion} | {log.message_snippet}"
+        for log in logs
+    ])
+
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=500,
+        messages=[{
+            "role": "user",
+            "content": f"""You are writing a weekly emotional wellness summary for a user.
+
+Based on the past 7 days of data, write a short, warm, honest weekly check-in summary.
+
+Include:
+- How their week looked emotionally overall
+- The most common trigger or theme
+- One thing they did well (even if just reaching out)
+- One gentle suggestion for the week ahead
+
+Keep it under 120 words. Be specific, not generic. Write directly to the user.
+
+This week's data:
+{history_text}
+
+Emotion breakdown: {emotion_counts}
+Dominant emotion: {dominant_emotion}"""
+        }]
+    )
+
+    return {
+        "user_id": user_id,
+        "week_analyzed": f"Past 7 days",
+        "total_checkins": len(logs),
+        "emotion_breakdown": emotion_counts,
+        "dominant_emotion": dominant_emotion,
+        "weekly_summary": response.content[0].text
+    }

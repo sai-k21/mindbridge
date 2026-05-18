@@ -41,7 +41,7 @@ export default function App() {
     setLoading(true);
 
     try {
-      const res = await axios.post(`${API}/chat`, null, {
+      const res = await axios.post(`${API}/api/v1/chat`, null, {
         params: { user_id: userId, session_id: sessionId, message: userMessage }
       });
 

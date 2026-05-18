@@ -13,7 +13,7 @@ import os
 
 limiter = Limiter(key_func=get_remote_address)
 
-router = APIRouter()
+router = APIRouter(prefix="/v1")
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Crisis keywords for fast rule-based detection

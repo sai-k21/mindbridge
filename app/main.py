@@ -45,7 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat.router)
+app.include_router(chat.router, prefix="/api")
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):

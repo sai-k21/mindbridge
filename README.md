@@ -11,10 +11,16 @@ your patterns — solving the core gap every competitor misses.
 
 ## Architecture
 
-```
-User → FastAPI REST API → Claude API (claude-opus-4-5)
-                       → PostgreSQL (conversation history + user memory)
-```
+![MindBridge Architecture](Mindbridge_architecture.png)
+
+### Agent Pipeline
+
+| Agent | Responsibility |
+|---|---|
+| Emotion Agent | Classifies message — calm, stressed, anxious, overwhelmed, crisis |
+| Memory Agent | Checks Redis cache first, falls back to PostgreSQL, injects context |
+| Conversation Agent | Builds dynamic system prompt based on emotion, calls Claude API |
+| Crisis Agent | Bypasses normal flow entirely, immediate 988 escalation, no questions asked |
 
 ## Tech Stack
 

@@ -1,10 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Conversation, UserMemory, EmotionLog, CrisisLog
 from app.agent import mindbridge_graph
+from app.schemas import ChatRequest
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 import anthropic
 import os
+
+
+limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -84,8 +91,11 @@ You deserve real support from someone trained to help. I care about what happens
 
 
 @router.post("/chat")
-def chat(user_id: str, session_id: str, message: str, db: Session = Depends(get_db)):
-
+@limiter.limit("10/minute")
+def chat(request: Request, chat_request: ChatRequest, db: Session = Depends(get_db)):
+    user_id = chat_request.user_id
+    session_id = chat_request.session_id
+    message = chat_request.message
     # Save user message first
     db.add(Conversation(
         user_id=user_id,

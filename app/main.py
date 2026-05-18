@@ -1,9 +1,25 @@
 import logging
 import time
+import os
+import sys
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from app.database import Base, engine
 from app.routes import chat
+
+def validate_environment():
+    required = ["DATABASE_URL", "ANTHROPIC_API_KEY", "REDIS_URL"]
+    missing = [var for var in required if not os.getenv(var)]
+    if missing:
+        print(f"ERROR: Missing environment variables: {missing}")
+        sys.exit(1)
+    print("Environment validation passed.")
+
+validate_environment()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,9 +29,14 @@ logger = logging.getLogger(__name__)
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="MindBridge API")
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
-# CORS — allow frontend to talk to backend
+app = FastAPI(title="MindBridge API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

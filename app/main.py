@@ -51,8 +51,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://mindbridge-drab.vercel.app"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-User-ID"],
 )
 
 app.include_router(chat.router, prefix="/api", dependencies=[Depends(verify_api_key)])

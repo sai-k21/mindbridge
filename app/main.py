@@ -1,10 +1,10 @@
 import logging
 import time
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 from app.routes import chat
 
-# Structured logging setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -14,10 +14,18 @@ logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="MindBridge API")
+
+# CORS — allow frontend to talk to backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(chat.router)
 
-
-# Request timing middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
@@ -26,11 +34,9 @@ async def log_requests(request: Request, call_next):
     logger.info(f"{request.method} {request.url.path} | {response.status_code} | {duration:.1f}ms")
     return response
 
-
 @app.get("/")
 def root():
     return {"status": "MindBridge is running"}
-
 
 @app.get("/health")
 def health():
@@ -38,7 +44,6 @@ def health():
     from app.database import engine
     from sqlalchemy import text
 
-    # Check DB
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

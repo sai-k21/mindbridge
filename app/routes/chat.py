@@ -6,6 +6,8 @@ from app.agent import mindbridge_graph
 from app.schemas import ChatRequest
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from fastapi import Header
+
 
 import anthropic
 import os
@@ -40,6 +42,10 @@ If someone seems to be in crisis, always refer them to
 professional help or the 988 crisis line (US)."""
 
 
+def verify_user_id(user_id: str, x_user_id: str = Header(...)):
+    if user_id != x_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
 def check_crisis_keywords(message: str) -> bool:
     message_lower = message.lower()
     return any(keyword in message_lower for keyword in CRISIS_KEYWORDS)
@@ -52,7 +58,7 @@ def detect_emotion(message: str) -> str:
         return "crisis"
 
     response = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=50,
         messages=[{
             "role": "user",
@@ -159,7 +165,7 @@ def chat(request: Request, chat_request: ChatRequest, db: Session = Depends(get_
     }
 
 @router.post("/memory/update")
-def update_memory(user_id: str, db: Session = Depends(get_db)):
+def update_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     all_convos = db.query(Conversation)\
         .filter(Conversation.user_id == user_id)\
@@ -173,8 +179,10 @@ def update_memory(user_id: str, db: Session = Depends(get_db)):
         f"{c.role}: {c.content}" for c in all_convos
     ])
 
+    history_text = history_text[-12000:]
+
     response = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=600,
         messages=[{
             "role": "user",
@@ -215,7 +223,7 @@ Conversations:
 
 
 @router.get("/memory/{user_id}")
-def get_memory(user_id: str, db: Session = Depends(get_db)):
+def get_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     memory = db.query(UserMemory)\
         .filter(UserMemory.user_id == user_id)\
@@ -232,7 +240,7 @@ def get_memory(user_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/history/{user_id}")
-def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
+def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     conversations = db.query(Conversation)\
         .filter(Conversation.user_id == user_id)\
@@ -263,7 +271,7 @@ def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depe
 
 
 @router.get("/emotions/{user_id}")
-def get_emotions(user_id: str, db: Session = Depends(get_db)):
+def get_emotions(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     logs = db.query(EmotionLog)\
         .filter(EmotionLog.user_id == user_id)\
@@ -293,7 +301,7 @@ def get_emotions(user_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/patterns/{user_id}")
-def get_patterns(user_id: str, db: Session = Depends(get_db)):
+def get_patterns(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     logs = db.query(EmotionLog)\
         .filter(EmotionLog.user_id == user_id)\
@@ -316,7 +324,7 @@ def get_patterns(user_id: str, db: Session = Depends(get_db)):
         emotion_counts[log.emotion] = emotion_counts.get(log.emotion, 0) + 1
 
     response = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=600,
         messages=[{
             "role": "user",
@@ -350,7 +358,7 @@ Emotion counts: {emotion_counts}"""
 
 
 @router.get("/weekly-summary/{user_id}")
-def get_weekly_summary(user_id: str, db: Session = Depends(get_db)):
+def get_weekly_summary(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     from datetime import datetime, timedelta
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
@@ -378,7 +386,7 @@ def get_weekly_summary(user_id: str, db: Session = Depends(get_db)):
     ])
 
     response = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=500,
         messages=[{
             "role": "user",
@@ -413,7 +421,7 @@ Dominant emotion: {dominant_emotion}"""
 
 
 @router.get("/crisis-log/{user_id}")
-def get_crisis_log(user_id: str, db: Session = Depends(get_db)):
+def get_crisis_log(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
 
     logs = db.query(CrisisLog)\
         .filter(CrisisLog.user_id == user_id)\

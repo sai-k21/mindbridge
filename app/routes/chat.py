@@ -232,11 +232,13 @@ def get_memory(user_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/history/{user_id}")
-def get_history(user_id: str, db: Session = Depends(get_db)):
+def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
 
     conversations = db.query(Conversation)\
         .filter(Conversation.user_id == user_id)\
         .order_by(Conversation.created_at)\
+        .offset(skip)\
+        .limit(limit)\
         .all()
 
     if not conversations:
@@ -245,6 +247,8 @@ def get_history(user_id: str, db: Session = Depends(get_db)):
     return {
         "user_id": user_id,
         "total_messages": len(conversations),
+        "skip": skip,
+        "limit": limit,
         "conversations": [
             {
                 "session_id": c.session_id,

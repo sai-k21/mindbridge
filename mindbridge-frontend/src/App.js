@@ -1,8 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
 
-const API = "https://mindbridge-api-vh6n.onrender.com";
-
 const EMOTION_COLORS = {
   calm: "#4CAF50",
   stressed: "#FF9800",
@@ -19,18 +17,58 @@ const EMOTION_EMOJI = {
   crisis: "🆘"
 };
 
+function getOrCreateUserId() {
+  try {
+    let userId = localStorage.getItem("mindbridge_user_id");
+    if (!userId) {
+      userId = "user_" + Math.random().toString(36).substr(2, 9);
+      localStorage.setItem("mindbridge_user_id", userId);
+    }
+    return userId;
+  } catch {
+    return "user_" + Math.random().toString(36).substr(2, 9);
+  }
+}
+
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [userId] = useState("user_" + Math.random().toString(36).substr(2, 6));
+  const [userId] = useState(getOrCreateUserId);
   const [sessionId] = useState("session_" + Date.now());
   const [lastEmotion, setLastEmotion] = useState(null);
+  const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
+  const [memoryUpdating, setMemoryUpdating] = useState(false);
+  const [memoryMessage, setMemoryMessage] = useState(null);
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    const seen = localStorage.getItem("mindbridge_privacy_seen");
+    if (!seen) setShowPrivacyNotice(true);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const dismissPrivacyNotice = () => {
+    localStorage.setItem("mindbridge_privacy_seen", "true");
+    setShowPrivacyNotice(false);
+  };
+
+  const updateMemory = async () => {
+    setMemoryUpdating(true);
+    setMemoryMessage(null);
+    try {
+      await axios.post(`/api/memory-update?user_id=${userId}`);
+      setMemoryMessage("Memory updated successfully.");
+    } catch {
+      setMemoryMessage("Nothing to update yet — keep chatting first.");
+    } finally {
+      setMemoryUpdating(false);
+      setTimeout(() => setMemoryMessage(null), 3000);
+    }
+  };
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
@@ -41,8 +79,10 @@ export default function App() {
     setLoading(true);
 
     try {
-      const res = await axios.post(`${API}/api/v1/chat`, null, {
-        params: { user_id: userId, session_id: sessionId, message: userMessage }
+      const res = await axios.post(`/api/chat`, {
+        user_id: userId,
+        session_id: sessionId,
+        message: userMessage
       });
 
       setLastEmotion(res.data.emotion_detected);
@@ -80,6 +120,45 @@ export default function App() {
       fontFamily: "'Segoe UI', sans-serif",
       color: "#fff"
     }}>
+
+      {/* Privacy Notice */}
+      {showPrivacyNotice && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(0,0,0,0.8)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 1000, padding: 20
+        }}>
+          <div style={{
+            background: "#1a1a2e", border: "1px solid #2a2a3e",
+            borderRadius: 16, padding: 32, maxWidth: 440, width: "100%"
+          }}>
+            <div style={{ fontSize: 24, marginBottom: 12 }}>🔒 Privacy Notice</div>
+            <div style={{ fontSize: 14, color: "#aaa", lineHeight: 1.7, marginBottom: 20 }}>
+              MindBridge saves a session ID on this device so it can remember
+              you across visits. No personal information is collected — no name,
+              email, or account required.
+              <br /><br />
+              <strong style={{ color: "#fff" }}>Do not use on shared or public computers.</strong>
+              <br /><br />
+              You can clear your data anytime by clearing your browser storage.
+            </div>
+            <button
+              onClick={dismissPrivacyNotice}
+              style={{
+                width: "100%",
+                background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                border: "none", borderRadius: 10,
+                padding: "12px", color: "#fff",
+                fontSize: 14, cursor: "pointer", fontWeight: 600
+              }}
+            >
+              I understand — let's go
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{
         width: "100%",
@@ -100,20 +179,45 @@ export default function App() {
               AI companion with persistent memory
             </div>
           </div>
-          {lastEmotion && (
-            <div style={{
-              marginLeft: "auto",
-              background: "#1a1a2e",
-              border: `1px solid ${EMOTION_COLORS[lastEmotion]}`,
-              borderRadius: 20,
-              padding: "4px 12px",
-              fontSize: 13,
-              color: EMOTION_COLORS[lastEmotion]
-            }}>
-              {EMOTION_EMOJI[lastEmotion]} {lastEmotion}
-            </div>
-          )}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+            {lastEmotion && (
+              <div style={{
+                background: "#1a1a2e",
+                border: `1px solid ${EMOTION_COLORS[lastEmotion]}`,
+                borderRadius: 20,
+                padding: "4px 12px",
+                fontSize: 13,
+                color: EMOTION_COLORS[lastEmotion]
+              }}>
+                {EMOTION_EMOJI[lastEmotion]} {lastEmotion}
+              </div>
+            )}
+            <button
+              onClick={updateMemory}
+              disabled={memoryUpdating}
+              title="Save this session to long-term memory"
+              style={{
+                background: "#1a1a2e",
+                border: "1px solid #2a2a3e",
+                borderRadius: 20,
+                padding: "4px 12px",
+                fontSize: 12,
+                color: memoryUpdating ? "#555" : "#888",
+                cursor: memoryUpdating ? "wait" : "pointer"
+              }}
+            >
+              {memoryUpdating ? "Saving..." : "💾 Save memory"}
+            </button>
+          </div>
         </div>
+        {memoryMessage && (
+          <div style={{
+            marginTop: 8, fontSize: 12,
+            color: "#4CAF50", textAlign: "right"
+          }}>
+            {memoryMessage}
+          </div>
+        )}
       </div>
 
       {/* Messages */}
@@ -225,9 +329,6 @@ export default function App() {
           >
             ↑
           </button>
-        </div>
-        <div style={{ fontSize: 11, color: "#333", marginTop: 8, textAlign: "center" }}>
-          Your session: {sessionId} • Memory persists across sessions
         </div>
       </div>
     </div>

@@ -10,7 +10,6 @@ your patterns — solving the core gap every competitor misses.
 
 ## Live Demo
 
-- Frontend: https://mindbridge-drab.vercel.app
 - API Base URL: `Self-hosted — see Local Setup below`
 
 > This is an open source project. Clone the repository, add your own

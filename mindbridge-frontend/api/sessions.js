@@ -1,0 +1,34 @@
+export default async function handler(req, res) {
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const { user_id } = req.query;
+  const accessToken = req.headers["x-access-token"];
+
+  if (!user_id) {
+    return res.status(400).json({ error: "user_id required" });
+  }
+
+  if (!accessToken) {
+    return res.status(400).json({ error: "access_token required" });
+  }
+
+  try {
+    const response = await fetch(
+      `${process.env.BACKEND_URL}/api/v1/sessions/${encodeURIComponent(user_id)}`,
+      {
+        method: "GET",
+        headers: {
+          "X-API-Key": process.env.API_KEY,
+          "X-Access-Token": accessToken
+        }
+      }
+    );
+
+    const data = await response.json();
+    return res.status(response.status).json(data);
+  } catch (error) {
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}

@@ -250,10 +250,19 @@ def get_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(ve
 
 
 @router.get("/history/{user_id}")
-def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
+def get_history(
+    user_id: str,
+    session_id: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_access_token)
+):
+    query = db.query(Conversation).filter(Conversation.user_id == user_id)
+    if session_id:
+        query = query.filter(Conversation.session_id == session_id)
 
-    conversations = db.query(Conversation)\
-        .filter(Conversation.user_id == user_id)\
+    conversations = query\
         .order_by(Conversation.created_at)\
         .offset(skip)\
         .limit(limit)\
@@ -278,6 +287,44 @@ def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depe
             for c in conversations
         ]
     }
+
+
+@router.get("/sessions/{user_id}")
+def get_sessions(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
+    """
+    Powers the sidebar: one row per past session, with a preview and
+    timestamps, newest first. Grouped in Python rather than SQL — the
+    data volume per anonymous user is small enough that this stays simple
+    and easy to read, at the cost of not scaling to huge histories.
+    """
+    conversations = db.query(Conversation)\
+        .filter(Conversation.user_id == user_id)\
+        .order_by(Conversation.created_at)\
+        .all()
+
+    if not conversations:
+        return {"user_id": user_id, "sessions": []}
+
+    sessions_by_id = {}
+    for c in conversations:
+        entry = sessions_by_id.setdefault(c.session_id, {
+            "session_id": c.session_id,
+            "started_at": c.created_at,
+            "last_message_at": c.created_at,
+            "message_count": 0,
+            "preview": None
+        })
+        entry["message_count"] += 1
+        entry["last_message_at"] = c.created_at
+        if entry["preview"] is None and c.role == "user":
+            entry["preview"] = c.content[:80]
+
+    sessions = sorted(sessions_by_id.values(), key=lambda s: s["last_message_at"], reverse=True)
+    for s in sessions:
+        s["started_at"] = str(s["started_at"])
+        s["last_message_at"] = str(s["last_message_at"])
+
+    return {"user_id": user_id, "sessions": sessions}
 
 
 @router.get("/emotions/{user_id}")

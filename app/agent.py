@@ -56,9 +56,11 @@ def emotion_agent(state: AgentState) -> AgentState:
         state["emotion"] = "crisis"
         return state
 
-    # LLM-based classification
+    # LLM-based classification — Haiku is plenty for a 5-way classification
+    # task and this call runs on every single message, so the model choice
+    # here matters a lot for both latency and cost.
     response = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=50,
         messages=[{
             "role": "user",

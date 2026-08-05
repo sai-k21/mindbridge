@@ -4,6 +4,7 @@ from app.database import get_db
 from app.models import Conversation, UserMemory, EmotionLog, CrisisLog
 from app.agent import mindbridge_graph
 from app.schemas import ChatRequest
+from app.cache import invalidate_memory_cache, check_and_increment_daily_usage
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from fastapi import Header
@@ -13,7 +14,19 @@ import anthropic
 import os
 
 
-limiter = Limiter(key_func=get_remote_address)
+def get_real_client_ip(request: Request) -> str:
+    """
+    Requests arrive via the Vercel proxy, so request.client.host is Vercel's
+    IP for every visitor. The proxy forwards the real visitor IP in
+    X-Forwarded-For — prefer that so rate limiting is actually per-visitor.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=get_real_client_ip)
 
 router = APIRouter(prefix="/v1")
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -25,75 +38,20 @@ CRISIS_KEYWORDS = [
     "can't go on", "give up on life", "hurt myself", "self harm"
 ]
 
-# Tone instructions per emotion
-TONE_INSTRUCTIONS = {
-    "calm": "The user seems calm. Be warm, conversational, and exploratory. Ask thoughtful open-ended questions.",
-    "stressed": "The user is stressed. Be grounded and validating. Acknowledge what they are carrying before asking anything.",
-    "anxious": "The user is anxious. Slow down. Be very gentle. Use shorter sentences. Give them space to breathe before exploring.",
-    "overwhelmed": "The user is overwhelmed. Be extremely gentle. Focus on one thing at a time. Do not ask multiple questions.",
-    "crisis": "The user may be in crisis. Do not ask questions. Immediately express care and refer them to professional help. Always mention the 988 Suicide and Crisis Lifeline (call or text 988 in the US) and encourage them to reach out to someone they trust."
-}
-
-SYSTEM_PROMPT = """You are MindBridge, a compassionate AI companion 
-for people dealing with workplace stress. You listen deeply, ask 
-thoughtful questions, and gently challenge unhelpful thinking patterns. 
-You never give hollow affirmations like 'you are amazing'. 
-If someone seems to be in crisis, always refer them to 
-professional help or the 988 crisis line (US)."""
-
-
 def verify_user_id(user_id: str, x_user_id: str = Header(...)):
     if user_id != x_user_id:
         raise HTTPException(status_code=403, detail="Forbidden")
 
+
 def check_crisis_keywords(message: str) -> bool:
+    """
+    Free, zero-latency pre-check used to make sure the daily budget guard
+    (below) can never delay or block a message that might be a crisis —
+    the real crisis path in agent.py runs this same check independently
+    and costs no LLM call either way.
+    """
     message_lower = message.lower()
     return any(keyword in message_lower for keyword in CRISIS_KEYWORDS)
-
-
-def detect_emotion(message: str) -> str:
-
-    # Fast rule-based crisis check first
-    if check_crisis_keywords(message):
-        return "crisis"
-
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=50,
-        messages=[{
-            "role": "user",
-            "content": f"""Classify the emotional state in this message into exactly one word.
-Choose only from: calm, stressed, anxious, overwhelmed, crisis
-
-Rules:
-- crisis: any mention of self-harm, suicide, hopelessness, not wanting to exist
-- overwhelmed: completely unable to cope, everything is too much
-- anxious: worry, fear, nervousness, panic
-- stressed: pressure, tension, difficulty but still coping
-- calm: neutral or positive
-
-Message: "{message}"
-
-Respond with only one word, nothing else."""
-        }]
-    )
-    emotion = response.content[0].text.strip().lower()
-    if emotion not in ["calm", "stressed", "anxious", "overwhelmed", "crisis"]:
-        emotion = "stressed"
-    return emotion
-
-
-def build_crisis_response() -> str:
-    return """I hear you, and I'm really glad you reached out right now.
-
-What you're feeling matters, and you don't have to face this alone.
-
-Please reach out to someone who can help right now:
-- Call or text 988 (Suicide and Crisis Lifeline, US) — available 24/7
-- Text HOME to 741741 (Crisis Text Line)
-- Call 911 or go to your nearest emergency room if you are in immediate danger
-
-You deserve real support from someone trained to help. I care about what happens to you."""
 
 
 @router.post("/chat")
@@ -102,6 +60,25 @@ def chat(request: Request, chat_request: ChatRequest, db: Session = Depends(get_
     user_id = chat_request.user_id
     session_id = chat_request.session_id
     message = chat_request.message
+
+    # Daily budget guard — protects the demo's Claude spend from abuse.
+    # Crisis messages ALWAYS bypass this: the keyword check is free and the
+    # crisis path itself makes zero LLM calls, so there's no cost reason to
+    # ever gate it, and every reason not to withhold a safety response.
+    if not check_crisis_keywords(message) and not check_and_increment_daily_usage():
+        return {
+            "session_id": session_id,
+            "reply": (
+                "MindBridge's free demo has reached its message limit for "
+                "today — thanks for trying it out! Please check back "
+                "tomorrow, or reach out directly if you'd like to see more "
+                "of the project."
+            ),
+            "emotion_detected": "calm",
+            "crisis_escalated": False,
+            "memory_active": False
+        }
+
     # Save user message first
     db.add(Conversation(
         user_id=user_id,
@@ -214,6 +191,7 @@ Conversations:
         db.add(UserMemory(user_id=user_id, summary=summary))
 
     db.commit()
+    invalidate_memory_cache(user_id)
 
     return {
         "user_id": user_id,

@@ -59,6 +59,34 @@ def invalidate_memory_cache(user_id: str):
         logger.warning(f"Cache invalidation error: {e}")
 
 
+def check_and_increment_daily_usage(limit: int = None) -> bool:
+    """
+    Increments today's global message counter and returns whether we're
+    still under the daily budget. Fails OPEN (returns True) if Redis is
+    unavailable, since a demo that degrades to "no budget cap" is safer
+    than one that silently refuses to work when the cache is down.
+    """
+    if not REDIS_AVAILABLE:
+        return True
+
+    if limit is None:
+        limit = int(os.getenv("DAILY_MESSAGE_LIMIT", "150"))
+
+    from datetime import date, timezone, datetime
+    key = f"daily_usage:{datetime.now(timezone.utc).date().isoformat()}"
+
+    try:
+        count = redis_client.incr(key)
+        if count == 1:
+            # First increment of the day — set expiry with a safety margin
+            # past 24h so a slow clock skew can't leave it uncapped.
+            redis_client.expire(key, 60 * 60 * 26)
+        return count <= limit
+    except Exception as e:
+        logger.warning(f"Budget guard check failed: {e}")
+        return True
+
+
 def get_cache_stats() -> dict:
     if not REDIS_AVAILABLE:
         return {"status": "unavailable"}

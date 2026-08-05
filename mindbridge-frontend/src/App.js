@@ -30,11 +30,29 @@ function getOrCreateUserId() {
   }
 }
 
+function getStoredAccessToken() {
+  try {
+    return localStorage.getItem("mindbridge_access_token");
+  } catch {
+    return null;
+  }
+}
+
+function storeAccessToken(token) {
+  try {
+    if (token) localStorage.setItem("mindbridge_access_token", token);
+  } catch {
+    // localStorage unavailable — memory features that need the token
+    // (like Save memory) just won't work this session, chat still will.
+  }
+}
+
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [userId] = useState(getOrCreateUserId);
+  const [accessToken, setAccessToken] = useState(getStoredAccessToken);
   const [sessionId] = useState("session_" + Date.now());
   const [lastEmotion, setLastEmotion] = useState(null);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
@@ -60,7 +78,11 @@ export default function App() {
     setMemoryUpdating(true);
     setMemoryMessage(null);
     try {
-      await axios.post(`/api/memory-update?user_id=${userId}`);
+      await axios.post(
+        `/api/memory-update?user_id=${userId}`,
+        {},
+        { headers: { "X-Access-Token": accessToken || "" } }
+      );
       setMemoryMessage("Memory updated successfully.");
     } catch {
       setMemoryMessage("Nothing to update yet — keep chatting first.");
@@ -84,6 +106,11 @@ export default function App() {
         session_id: sessionId,
         message: userMessage
       });
+
+      if (res.data.access_token) {
+        storeAccessToken(res.data.access_token);
+        setAccessToken(res.data.access_token);
+      }
 
       setLastEmotion(res.data.emotion_detected);
       setMessages(prev => [...prev, {

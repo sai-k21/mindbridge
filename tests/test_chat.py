@@ -1,13 +1,33 @@
 import os
+import secrets
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from app.main import app
+from app.database import SessionLocal
+from app.models import UserToken
 
 # main.py requires X-API-Key on every route under chat.router — without
 # this, every request below 403s before reaching any code under test,
 # regardless of what that test is actually trying to check.
 client = TestClient(app, headers={"X-API-Key": os.getenv("API_KEY")})
+
+
+def _get_or_create_test_token(user_id: str) -> str:
+    """Mints a token the same way app.routes.chat.get_or_create_access_token
+    does in production, so these tests exercise the real auth path instead
+    of bypassing it."""
+    db = SessionLocal()
+    try:
+        record = db.query(UserToken).filter(UserToken.user_id == user_id).first()
+        if record:
+            return record.token
+        token = secrets.token_urlsafe(32)
+        db.add(UserToken(user_id=user_id, token=token))
+        db.commit()
+        return token
+    finally:
+        db.close()
 
 
 def test_root_endpoint():
@@ -76,33 +96,70 @@ def test_chat_valid_message():
         assert "memory_active" in data
 
 
+def test_chat_returns_access_token():
+    with patch("app.routes.chat.mindbridge_graph") as mock_graph:
+        mock_graph.invoke.return_value = {
+            "emotion": "calm",
+            "reply": "Hi there.",
+            "crisis_escalated": False,
+            "memory_summary": None
+        }
+        response = client.post("/api/v1/chat", json={
+            "user_id": "test_token_user_456",
+            "session_id": "test_session_456",
+            "message": "Hello"
+        })
+        assert response.status_code == 200
+        assert response.json()["access_token"]
+
+
 def test_memory_update_no_conversations():
+    token = _get_or_create_test_token("nonexistent_user_xyz")
     response = client.post(
         "/api/v1/memory/update?user_id=nonexistent_user_xyz",
-        headers={"X-User-Id": "nonexistent_user_xyz"}
+        headers={"X-Access-Token": token}
     )
     assert response.status_code == 404
 
 
 def test_get_memory_not_found():
+    token = _get_or_create_test_token("nonexistent_user_xyz")
     response = client.get(
         "/api/v1/memory/nonexistent_user_xyz",
-        headers={"X-User-Id": "nonexistent_user_xyz"}
+        headers={"X-Access-Token": token}
     )
     assert response.status_code == 404
 
 
 def test_get_history_not_found():
+    token = _get_or_create_test_token("nonexistent_user_xyz")
     response = client.get(
         "/api/v1/history/nonexistent_user_xyz",
-        headers={"X-User-Id": "nonexistent_user_xyz"}
+        headers={"X-Access-Token": token}
     )
     assert response.status_code == 404
 
 
 def test_get_patterns_not_found():
+    token = _get_or_create_test_token("nonexistent_user_xyz")
     response = client.get(
         "/api/v1/patterns/nonexistent_user_xyz",
-        headers={"X-User-Id": "nonexistent_user_xyz"}
+        headers={"X-Access-Token": token}
     )
     assert response.status_code == 404
+
+
+def test_access_token_rejects_wrong_token():
+    # The actual IDOR regression test — proves a client can no longer read
+    # another user's data just by declaring their user_id in a header.
+    _get_or_create_test_token("real_user_abc")
+    response = client.get(
+        "/api/v1/memory/real_user_abc",
+        headers={"X-Access-Token": "totally-wrong-token"}
+    )
+    assert response.status_code == 403
+
+
+def test_access_token_rejects_missing_token():
+    response = client.get("/api/v1/memory/real_user_abc")
+    assert response.status_code == 422  # header is required

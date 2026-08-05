@@ -28,3 +28,4 @@ class ChatResponse(BaseModel):
     emotion_detected: str
     crisis_escalated: bool
     memory_active: bool
+    access_token: str | None = None

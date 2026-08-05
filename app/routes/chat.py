@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Conversation, UserMemory, EmotionLog, CrisisLog
+from app.models import Conversation, UserMemory, EmotionLog, CrisisLog, UserToken
 from app.agent import mindbridge_graph
 from app.schemas import ChatRequest
 from app.cache import invalidate_memory_cache, check_and_increment_daily_usage
@@ -12,6 +12,7 @@ from fastapi import Header
 
 import anthropic
 import os
+import secrets
 
 
 def get_real_client_ip(request: Request) -> str:
@@ -38,8 +39,36 @@ CRISIS_KEYWORDS = [
     "can't go on", "give up on life", "hurt myself", "self harm"
 ]
 
-def verify_user_id(user_id: str, x_user_id: str = Header(...)):
-    if user_id != x_user_id:
+def get_or_create_access_token(user_id: str, db: Session) -> str:
+    """
+    Called from /chat on every message. Cheap (one indexed lookup) and
+    idempotent — returns the existing token if this user_id has one,
+    otherwise mints a new one. The frontend stores whatever it gets back.
+    """
+    record = db.query(UserToken).filter(UserToken.user_id == user_id).first()
+    if record:
+        return record.token
+
+    token = secrets.token_urlsafe(32)
+    db.add(UserToken(user_id=user_id, token=token))
+    db.commit()
+    return token
+
+
+def verify_access_token(
+    user_id: str,
+    x_access_token: str = Header(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Proves the caller actually owns this user_id — the earlier design just
+    checked that a client-supplied X-User-Id header matched the user_id in
+    the URL, which anyone could satisfy by declaring whatever they wanted.
+    This checks a secret token that only the real owner would have been
+    given, using a constant-time comparison to avoid timing attacks.
+    """
+    record = db.query(UserToken).filter(UserToken.user_id == user_id).first()
+    if not record or not secrets.compare_digest(record.token, x_access_token):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -87,6 +116,8 @@ def chat(request: Request, chat_request: ChatRequest, db: Session = Depends(get_
         content=message
     ))
     db.commit()
+
+    access_token = get_or_create_access_token(user_id, db)
 
     # Run through LangGraph multi-agent pipeline
     result = mindbridge_graph.invoke({
@@ -138,11 +169,12 @@ def chat(request: Request, chat_request: ChatRequest, db: Session = Depends(get_
         "reply": reply,
         "emotion_detected": emotion,
         "crisis_escalated": crisis_escalated,
-        "memory_active": result["memory_summary"] is not None
+        "memory_active": result["memory_summary"] is not None,
+        "access_token": access_token
     }
 
 @router.post("/memory/update")
-def update_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def update_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     all_convos = db.query(Conversation)\
         .filter(Conversation.user_id == user_id)\
@@ -201,7 +233,7 @@ Conversations:
 
 
 @router.get("/memory/{user_id}")
-def get_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def get_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     memory = db.query(UserMemory)\
         .filter(UserMemory.user_id == user_id)\
@@ -218,7 +250,7 @@ def get_memory(user_id: str, db: Session = Depends(get_db), _: None = Depends(ve
 
 
 @router.get("/history/{user_id}")
-def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     conversations = db.query(Conversation)\
         .filter(Conversation.user_id == user_id)\
@@ -249,7 +281,7 @@ def get_history(user_id: str, skip: int = 0, limit: int = 50, db: Session = Depe
 
 
 @router.get("/emotions/{user_id}")
-def get_emotions(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def get_emotions(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     logs = db.query(EmotionLog)\
         .filter(EmotionLog.user_id == user_id)\
@@ -279,7 +311,7 @@ def get_emotions(user_id: str, db: Session = Depends(get_db), _: None = Depends(
 
 
 @router.get("/patterns/{user_id}")
-def get_patterns(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def get_patterns(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     logs = db.query(EmotionLog)\
         .filter(EmotionLog.user_id == user_id)\
@@ -336,7 +368,7 @@ Emotion counts: {emotion_counts}"""
 
 
 @router.get("/weekly-summary/{user_id}")
-def get_weekly_summary(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def get_weekly_summary(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     from datetime import datetime, timedelta
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
@@ -399,7 +431,7 @@ Dominant emotion: {dominant_emotion}"""
 
 
 @router.get("/crisis-log/{user_id}")
-def get_crisis_log(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_user_id)):
+def get_crisis_log(user_id: str, db: Session = Depends(get_db), _: None = Depends(verify_access_token)):
 
     logs = db.query(CrisisLog)\
         .filter(CrisisLog.user_id == user_id)\

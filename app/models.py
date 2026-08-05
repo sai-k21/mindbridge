@@ -28,6 +28,19 @@ class EmotionLog(Base):
     message_snippet = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
 
+class UserToken(Base):
+    """
+    A random secret issued the first time a user_id is seen. Its presence
+    (matched via constant-time compare) is what proves a request actually
+    belongs to that anonymous user, instead of the old design where a
+    client could just declare any user_id it wanted in a header.
+    """
+    __tablename__ = "user_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, unique=True)
+    token = Column(String, unique=True)
+    created_at = Column(DateTime, server_default=func.now())
+
 class CrisisLog(Base):
     __tablename__ = "crisis_log"
     id = Column(Integer, primary_key=True, index=True)

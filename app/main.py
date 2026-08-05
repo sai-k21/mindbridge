@@ -52,7 +52,7 @@ app.add_middleware(
     allow_origins=["https://mindbridge-drab.vercel.app"],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-User-ID"],
+    allow_headers=["Content-Type", "X-User-ID", "X-Access-Token"],
 )
 
 app.include_router(chat.router, prefix="/api", dependencies=[Depends(verify_api_key)])

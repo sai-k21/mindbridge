@@ -4,9 +4,14 @@ export default async function handler(req, res) {
   }
 
   const { user_id } = req.query;
+  const accessToken = req.headers["x-access-token"];
 
   if (!user_id) {
     return res.status(400).json({ error: "user_id required" });
+  }
+
+  if (!accessToken) {
+    return res.status(400).json({ error: "access_token required — send at least one chat message first" });
   }
 
   try {
@@ -16,7 +21,8 @@ export default async function handler(req, res) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": process.env.API_KEY
+          "X-API-Key": process.env.API_KEY,
+          "X-Access-Token": accessToken
         }
       }
     );

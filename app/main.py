@@ -14,7 +14,7 @@ from fastapi import Security, HTTPException, Depends
 from fastapi.security.api_key import APIKeyHeader
 
 def validate_environment():
-    required = ["DATABASE_URL", "ANTHROPIC_API_KEY", "REDIS_URL", "API_KEY"]
+    required = ["DATABASE_URL", "ANTHROPIC_API_KEY", "REDIS_URL", "API_KEY", "ENCRYPTION_KEY"]
     missing = [var for var in required if not os.getenv(var)]
     if missing:
         print(f"ERROR: Missing environment variables: {missing}")

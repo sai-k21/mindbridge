@@ -13,6 +13,7 @@ from fastapi import Header
 import anthropic
 import os
 import secrets
+import hashlib
 
 
 def get_real_client_ip(request: Request) -> str:
@@ -39,18 +40,24 @@ CRISIS_KEYWORDS = [
     "can't go on", "give up on life", "hurt myself", "self harm"
 ]
 
-def get_or_create_access_token(user_id: str, db: Session) -> str:
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def get_or_create_access_token(user_id: str, db: Session) -> str | None:
     """
-    Called from /chat on every message. Cheap (one indexed lookup) and
-    idempotent — returns the existing token if this user_id has one,
-    otherwise mints a new one. The frontend stores whatever it gets back.
+    Returns the raw token ONLY the first time it's minted for a user_id.
+    After that we've only ever stored its hash (one-way, like a password
+    hash) — the server genuinely cannot produce the original again. The
+    frontend already only stores a token when the response includes a
+    truthy one, so returning None here on repeat visits is correct as-is.
     """
     record = db.query(UserToken).filter(UserToken.user_id == user_id).first()
     if record:
-        return record.token
+        return None
 
     token = secrets.token_urlsafe(32)
-    db.add(UserToken(user_id=user_id, token=token))
+    db.add(UserToken(user_id=user_id, token_hash=hash_token(token)))
     db.commit()
     return token
 
@@ -61,14 +68,12 @@ def verify_access_token(
     db: Session = Depends(get_db),
 ):
     """
-    Proves the caller actually owns this user_id — the earlier design just
-    checked that a client-supplied X-User-Id header matched the user_id in
-    the URL, which anyone could satisfy by declaring whatever they wanted.
-    This checks a secret token that only the real owner would have been
-    given, using a constant-time comparison to avoid timing attacks.
+    Proves the caller actually owns this user_id. We compare hashes, not
+    raw tokens — even someone with direct database access only ever sees
+    a hash, which can't be used to impersonate anyone on its own.
     """
     record = db.query(UserToken).filter(UserToken.user_id == user_id).first()
-    if not record or not secrets.compare_digest(record.token, x_access_token):
+    if not record or not secrets.compare_digest(record.token_hash, hash_token(x_access_token)):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 

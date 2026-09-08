@@ -3,6 +3,7 @@ import os
 import json
 import logging
 from dotenv import load_dotenv
+from app.encryption import encrypt_text, decrypt_text
 
 load_dotenv()
 
@@ -31,7 +32,7 @@ def get_cached_memory(user_id: str) -> str | None:
         cached = redis_client.get(f"memory:{user_id}")
         if cached:
             logger.info(f"Cache HIT for memory:{user_id}")
-            return cached
+            return decrypt_text(cached)
         logger.info(f"Cache MISS for memory:{user_id}")
         return None
     except Exception as e:
@@ -43,7 +44,7 @@ def set_cached_memory(user_id: str, summary: str, ttl: int = 3600):
     if not REDIS_AVAILABLE:
         return
     try:
-        redis_client.setex(f"memory:{user_id}", ttl, summary)
+        redis_client.setex(f"memory:{user_id}", ttl, encrypt_text(summary))
         logger.info(f"Cache SET for memory:{user_id} TTL={ttl}s")
     except Exception as e:
         logger.warning(f"Cache write error: {e}")

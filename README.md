@@ -32,7 +32,7 @@ your patterns — solving the core gap every competitor misses.
 ## Tech Stack
 
 - **Backend:** Python, FastAPI, LangGraph
-- **Database:** PostgreSQL (Render), Redis (Upstash)
+- **Database:** PostgreSQL (Neon), Redis (Upstash)
 - **AI:** Anthropic Claude API
 - **Frontend:** React (Vercel)
 - **ORM:** SQLAlchemy
